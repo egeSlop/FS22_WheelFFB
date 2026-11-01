@@ -17,7 +17,7 @@ WheelFFB = {
     PIPE = "\\\\.\\pipe\\WheelFFB",
     SEND_INTERVAL = 16,   -- ms, ~60 Hz
     RETRY_INTERVAL = 1000, -- ms between attempts to open the pipe
-    VERSION = "1.3",
+    VERSION = "1.4",
     -- Physical wheel rotation, lock to lock, in degrees (Wheel Studio's rotation angle).
     -- Override in modSettings/FS22_WheelFFB.xml: <wheelFFB wheelRotation="900" syncSteering="true"/>
     wheelRotation = 900,
@@ -273,37 +273,81 @@ if Drivable ~= nil and Drivable.updateVehiclePhysics ~= nil then
     end
 end
 
--- LO-HI as a toggle. The wheel's LO-HI button is bound to "range up"; in the top range it now
--- shifts down instead, so on a two-range tractor it flips LO <-> HI. (HOME stays "range down".)
+-- LO-HI button (bound to "range up").
+--  * Tractors with ranges (gear groups): flips LO <-> HI. In the top range it shifts down instead of
+--    doing nothing. HOME stays "range down".
+--  * Tractors whose shifter positions skip gears (e.g. 12 gears on 6 positions: 1, 3, 5 ... 11):
+--    a splitter. It steps to the in-between gear and back, and the shifter keeps the half you chose,
+--    so with the splitter on "high", 5th -> 7th lands on 8.
+local function isSplitGearbox(motor)
+    if motor == nil or motor.forwardGears == nil then return false end
+    if motor.gearGroups ~= nil and (motor.numGearGroups or 0) > 1 then return false end
+    for _, gear in ipairs(motor.forwardGears) do
+        if gear.inputAction == nil then return true end
+    end
+    return false
+end
+
+local function sendShift(vehicle, shiftType)
+    pcall(MotorGearShiftEvent.sendEvent, vehicle, shiftType)
+end
+
 if Motorized ~= nil and Motorized.actionEventShiftGroup ~= nil and MotorGearShiftEvent ~= nil and InputAction ~= nil then
     local shiftGroup = Motorized.actionEventShiftGroup
     Motorized.actionEventShiftGroup = function(self, actionName, ...)
         local spec = self.spec_motorized
         local motor = spec ~= nil and spec.motor or nil
-        if actionName == InputAction.SHIFT_GROUP_UP and motor ~= nil and motor.gearGroups ~= nil
-            and motor.numGearGroups ~= nil and motor.numGearGroups > 1
-            and motor.activeGearGroupIndex ~= nil and motor.activeGearGroupIndex >= motor.numGearGroups then
-            pcall(MotorGearShiftEvent.sendEvent, self, MotorGearShiftEvent.TYPE_SHIFT_GROUP_DOWN)
-            return
+        if actionName == InputAction.SHIFT_GROUP_UP and motor ~= nil then
+            if motor.gearGroups ~= nil and (motor.numGearGroups or 0) > 1
+                and motor.activeGearGroupIndex ~= nil and motor.activeGearGroupIndex >= motor.numGearGroups then
+                sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_GROUP_DOWN)
+                return
+            end
+            if isSplitGearbox(motor) and motor.currentDirection ~= -1 then
+                local gears, t = motor.forwardGears, motor.targetGear or 0
+                local cur, nxt = gears[t], gears[t + 1]
+                if cur ~= nil and cur.inputAction ~= nil and nxt ~= nil and nxt.inputAction == nil then
+                    self.wheelFFBSplitHigh = true
+                    sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_UP)
+                elseif cur ~= nil and cur.inputAction == nil then
+                    self.wheelFFBSplitHigh = false
+                    sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_DOWN)
+                else
+                    self.wheelFFBSplitHigh = not self.wheelFFBSplitHigh  -- in neutral: preselect
+                end
+                return
+            end
         end
         return shiftGroup(self, actionName, ...)
     end
 end
 
--- H-shifter helper. In FS22, R only flips the driving direction and choosing a gear never flips
--- it back, so going from R straight into 2nd kept reversing. Choosing any gear while reversing now
--- switches to forward first, through the game's own (multiplayer-safe) direction event.
+-- Shifter helpers, run on every shifter position:
+--  * FS22's R only flips the driving direction and choosing a gear never flips it back, so going
+--    from R straight into 2nd kept reversing. Choosing a gear while reversing now switches to forward.
+--  * With the splitter on "high", the shifter lands on the in-between gear.
+-- Both go through the game's own (multiplayer-safe) gear events.
 if Motorized ~= nil and Motorized.actionEventSelectGear ~= nil and MotorGearShiftEvent ~= nil then
     local selectGear = Motorized.actionEventSelectGear
     Motorized.actionEventSelectGear = function(self, actionName, inputValue, ...)
-        if inputValue == 1 then
-            local spec = self.spec_motorized
-            local motor = spec ~= nil and spec.motor or nil
-            if motor ~= nil and motor.currentDirection == -1 then
-                pcall(MotorGearShiftEvent.sendEvent, self, MotorGearShiftEvent.TYPE_DIRECTION_CHANGE_POS)
+        local spec = self.spec_motorized
+        local motor = spec ~= nil and spec.motor or nil
+        if inputValue == 1 and motor ~= nil and motor.currentDirection == -1 then
+            sendShift(self, MotorGearShiftEvent.TYPE_DIRECTION_CHANGE_POS)
+        end
+        local result = selectGear(self, actionName, inputValue, ...)
+        if inputValue == 1 and self.wheelFFBSplitHigh and isSplitGearbox(motor) and InputAction ~= nil then
+            local gears = motor.forwardGears
+            for i, gear in ipairs(gears) do
+                if gear.inputAction == InputAction[actionName] then
+                    if gears[i + 1] ~= nil and gears[i + 1].inputAction == nil then
+                        sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_UP)
+                    end
+                    break
+                end
             end
         end
-        return selectGear(self, actionName, inputValue, ...)
+        return result
     end
 end
 
