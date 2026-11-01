@@ -17,7 +17,7 @@ WheelFFB = {
     PIPE = "\\\\.\\pipe\\WheelFFB",
     SEND_INTERVAL = 16,   -- ms, ~60 Hz
     RETRY_INTERVAL = 1000, -- ms between attempts to open the pipe
-    VERSION = "1.4",
+    VERSION = "1.5",
     -- Physical wheel rotation, lock to lock, in degrees (Wheel Studio's rotation angle).
     -- Override in modSettings/FS22_WheelFFB.xml: <wheelFFB wheelRotation="900" syncSteering="true"/>
     wheelRotation = 900,
@@ -71,6 +71,10 @@ function WheelFFB:buildLine()
     local parts = { '"v":1', '"seq":' .. ctx.seq, string.format('"t":%.3f', ctx.elapsed / 1000) }
 
     local vehicle = controlledVehicle()
+    if vehicle ~= nil and vehicle ~= ctx.loggedVehicle then
+        ctx.loggedVehicle = vehicle
+        pcall(WheelFFB.logGearbox, vehicle)
+    end
     if vehicle == nil or isPaused() then
         parts[#parts + 1] = '"active":false'
         return "{" .. table.concat(parts, ",") .. "}"
@@ -273,12 +277,27 @@ if Drivable ~= nil and Drivable.updateVehiclePhysics ~= nil then
     end
 end
 
--- LO-HI button (bound to "range up").
---  * Tractors with ranges (gear groups): flips LO <-> HI. In the top range it shifts down instead of
---    doing nothing. HOME stays "range down".
---  * Tractors whose shifter positions skip gears (e.g. 12 gears on 6 positions: 1, 3, 5 ... 11):
---    a splitter. It steps to the in-between gear and back, and the shifter keeps the half you chose,
---    so with the splitter on "high", 5th -> 7th lands on 8.
+--- Writes the vehicle's gearbox to log.txt, to see how its shifter positions and ranges are laid out.
+function WheelFFB.logGearbox(vehicle)
+    local spec = vehicle.spec_motorized
+    local motor = spec ~= nil and spec.motor or nil
+    if motor == nil then return end
+    local name = vehicle.getFullName ~= nil and vehicle:getFullName() or tostring(vehicle.configFileName)
+    local gears = {}
+    for i, g in ipairs(motor.forwardGears or {}) do
+        local action = "-"
+        for k, v in pairs(InputAction or {}) do
+            if v == g.inputAction and type(k) == "string" and k:find("SHIFT_GEAR_SELECT_", 1, true) then action = k:sub(-1) end
+        end
+        gears[#gears + 1] = string.format("%d:%s@%s", i, tostring(g.name), action)
+    end
+    local groups = {}
+    for i, g in ipairs(motor.gearGroups or {}) do groups[#groups + 1] = string.format("%d:%s", i, tostring(g.name)) end
+    print(string.format("WheelFFB: gearbox of %s | gears(name@shifterPos) %s | groups %s (type %s, manual %s) | manualGears %s",
+        tostring(name), table.concat(gears, " "), #groups > 0 and table.concat(groups, " ") or "none",
+        tostring(motor.groupType), tostring(motor.manualShiftGroups), tostring(motor.manualShiftGears)))
+end
+
 local function isSplitGearbox(motor)
     if motor == nil or motor.forwardGears == nil then return false end
     if motor.gearGroups ~= nil and (motor.numGearGroups or 0) > 1 then return false end
@@ -292,33 +311,48 @@ local function sendShift(vehicle, shiftType)
     pcall(MotorGearShiftEvent.sendEvent, vehicle, shiftType)
 end
 
-if Motorized ~= nil and Motorized.actionEventShiftGroup ~= nil and MotorGearShiftEvent ~= nil and InputAction ~= nil then
-    local shiftGroup = Motorized.actionEventShiftGroup
-    Motorized.actionEventShiftGroup = function(self, actionName, ...)
-        local spec = self.spec_motorized
-        local motor = spec ~= nil and spec.motor or nil
-        if actionName == InputAction.SHIFT_GROUP_UP and motor ~= nil then
-            if motor.gearGroups ~= nil and (motor.numGearGroups or 0) > 1
-                and motor.activeGearGroupIndex ~= nil and motor.activeGearGroupIndex >= motor.numGearGroups then
-                sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_GROUP_DOWN)
-                return
-            end
-            if isSplitGearbox(motor) and motor.currentDirection ~= -1 then
-                local gears, t = motor.forwardGears, motor.targetGear or 0
-                local cur, nxt = gears[t], gears[t + 1]
-                if cur ~= nil and cur.inputAction ~= nil and nxt ~= nil and nxt.inputAction == nil then
-                    self.wheelFFBSplitHigh = true
-                    sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_UP)
-                elseif cur ~= nil and cur.inputAction == nil then
-                    self.wheelFFBSplitHigh = false
-                    sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_DOWN)
-                else
-                    self.wheelFFBSplitHigh = not self.wheelFFBSplitHigh  -- in neutral: preselect
-                end
-                return
-            end
+-- LO-HI: the mod's own input action (WHEELFFB_LOHI), because FS22 only enables "range up" on
+-- vehicles that have ranges. The button decides per vehicle:
+--  * ranges (gear groups): flips LO <-> HI; in the top range it shifts down.
+--  * shifter positions that skip gears (John Deere 4755: 15 gears on 8 positions, 1-3-5...):
+--    a splitter. It steps to the in-between gear and back, and the shifter keeps the half you chose,
+--    so with the splitter on "high", 5th -> 7th lands on 8.
+function WheelFFB.onLoHi(self, actionName, inputValue)
+    local spec = self.spec_motorized
+    local motor = spec ~= nil and spec.motor or nil
+    if motor == nil then return end
+    print(string.format("WheelFFB: LO-HI pressed: group %s/%s, gear %s, direction %s, split gearbox %s",
+        tostring(motor.activeGearGroupIndex), tostring(motor.numGearGroups), tostring(motor.targetGear),
+        tostring(motor.currentDirection), tostring(isSplitGearbox(motor))))
+    if motor.gearGroups ~= nil and (motor.numGearGroups or 0) > 1 then
+        local top = (motor.activeGearGroupIndex or 1) >= motor.numGearGroups
+        sendShift(self, top and MotorGearShiftEvent.TYPE_SHIFT_GROUP_DOWN or MotorGearShiftEvent.TYPE_SHIFT_GROUP_UP)
+        return
+    end
+    if isSplitGearbox(motor) and motor.currentDirection ~= -1 then
+        local gears, t = motor.forwardGears, motor.targetGear or 0
+        local cur, nxt = gears[t], gears[t + 1]
+        if cur ~= nil and cur.inputAction ~= nil and nxt ~= nil and nxt.inputAction == nil then
+            self.wheelFFBSplitHigh = true
+            sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_UP)
+        elseif cur ~= nil and cur.inputAction == nil then
+            self.wheelFFBSplitHigh = false
+            sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_DOWN)
+        else
+            self.wheelFFBSplitHigh = not self.wheelFFBSplitHigh  -- in neutral: preselect
         end
-        return shiftGroup(self, actionName, ...)
+    end
+end
+
+if Motorized ~= nil and Motorized.onRegisterActionEvents ~= nil and MotorGearShiftEvent ~= nil then
+    local register = Motorized.onRegisterActionEvents
+    Motorized.onRegisterActionEvents = function(self, isActiveForInput, isActiveForInputIgnoreSelection, ...)
+        register(self, isActiveForInput, isActiveForInputIgnoreSelection, ...)
+        if self.isClient and isActiveForInputIgnoreSelection and InputAction ~= nil and InputAction.WHEELFFB_LOHI ~= nil then
+            local spec = self.spec_motorized
+            local _, id = self:addActionEvent(spec.actionEvents, InputAction.WHEELFFB_LOHI, self, WheelFFB.onLoHi, false, true, false, true, nil)
+            if id ~= nil and g_inputBinding ~= nil then g_inputBinding:setActionEventTextVisibility(id, false) end
+        end
     end
 end
 

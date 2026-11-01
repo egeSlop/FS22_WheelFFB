@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8" standalone="no" ?>
 <modDesc descVersion="72">
     <author>egeadam</author>
-    <version>1.4.0.0</version>
+    <version>1.5.0.0</version>
     <title>
         <en>Wheel Force Feedback</en>
         <tr>Direksiyon FFB</tr>
@@ -16,6 +16,20 @@ Araç verilerini bir FFB sunucusuna (V987 Wheel Studio ya da ffb-server) gönder
     </description>
     <iconFilename>icon_wheelFFB.dds</iconFilename>
     <multiplayer supported="true"/>
+    <actions>
+        <action name="WHEELFFB_LOHI" category="VEHICLE" axisType="HALF"/>
+    </actions>
+    <inputBinding>
+        <actionBinding action="WHEELFFB_LOHI">
+            <binding device="KB_MOUSE_DEFAULT" input="KEY_KP_7" axisComponent="+" neutralInput="0" index="1"/>
+        </actionBinding>
+    </inputBinding>
+    <l10n>
+        <text name="input_WHEELFFB_LOHI">
+            <en>Wheel LO-HI (range or splitter)</en>
+            <tr>Direksiyon LO-HI (vites grubu ya da ara vites)</tr>
+        </text>
+    </l10n>
     <extraSourceFiles>
         <sourceFile filename="WheelFFB.lua"/>
     </extraSourceFiles>
