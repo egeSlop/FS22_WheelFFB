@@ -1,0 +1,7 @@
+target/
+# GIANTS' game source (sdk/debugger/gameSource.zip): not ours to publish
+ref/
+# early experiments
+probe/
+bridge/
+*.log

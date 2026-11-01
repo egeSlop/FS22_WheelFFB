@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8" standalone="no" ?>
+<modDesc descVersion="72">
+    <author>egeadam</author>
+    <version>1.1.0.0</version>
+    <title>
+        <en>Wheel Force Feedback</en>
+        <tr>Direksiyon FFB</tr>
+    </title>
+    <description>
+        <en><![CDATA[Force feedback for steering wheels: road and field texture, bumps, steering that gets heavier with speed, engine vibration and impacts.
+
+Sends vehicle telemetry to an FFB server (V987 Wheel Studio or ffb-server). It does nothing on its own, and the game runs normally when no server is running.]]></en>
+        <tr><![CDATA[Direksiyonlar için FFB: yol ve tarla dokusu, tümsekler, hızla ağırlaşan direksiyon, motor titreşimi ve darbeler.
+
+Araç verilerini bir FFB sunucusuna (V987 Wheel Studio ya da ffb-server) gönderir. Tek başına bir şey yapmaz, sunucu çalışmıyorsa oyun normal şekilde çalışır.]]></tr>
+    </description>
+    <iconFilename>icon_wheelFFB.dds</iconFilename>
+    <multiplayer supported="true"/>
+    <extraSourceFiles>
+        <sourceFile filename="WheelFFB.lua"/>
+    </extraSourceFiles>
+</modDesc>
