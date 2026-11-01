@@ -17,7 +17,11 @@ WheelFFB = {
     PIPE = "\\\\.\\pipe\\WheelFFB",
     SEND_INTERVAL = 16,   -- ms, ~60 Hz
     RETRY_INTERVAL = 1000, -- ms between attempts to open the pipe
-    VERSION = "1.1"
+    VERSION = "1.3",
+    -- Physical wheel rotation, lock to lock, in degrees (Wheel Studio's rotation angle).
+    -- Override in modSettings/FS22_WheelFFB.xml: <wheelFFB wheelRotation="900" syncSteering="true"/>
+    wheelRotation = 900,
+    syncSteering = true
 }
 
 local ctx = { file = nil, pending = 0, retry = WheelFFB.RETRY_INTERVAL, seq = 0, elapsed = 0, warned = 0 }
@@ -83,6 +87,11 @@ function WheelFFB:buildLine()
     -- Driver steering input (-1..1) as the game sees it.
     local drv = vehicle.spec_drivable
     if drv ~= nil then num(parts, "steerInput", drv.axisSide) end
+    -- How far the wheel is turned past the in-game steering lock (soft lock in the FFB server).
+    local over = vehicle.wheelFFBLockOver
+    if over ~= nil and vehicle.wheelFFBSteerTime ~= nil and ctx.elapsed - vehicle.wheelFFBSteerTime < 250 then
+        num(parts, "lockOver", over, "%.4f")
+    end
 
     -- Engine.
     local mot = vehicle.spec_motorized
@@ -191,6 +200,111 @@ end
 
 function WheelFFB:deleteMap()
     self:close()
+end
+
+-- 1:1 steering. FS22 turns the in-game steering wheel by input x (rotTime x indoorRotation), which
+-- differs per vehicle, while a real wheel always uses its full rotation for full lock. Scale the
+-- wheel's input so the in-game wheel follows the real one degree for degree, and let the steering
+-- follow the wheel directly instead of FS22's gamepad-style smoothing. Turning past the in-game
+-- lock is reported as lockOver, and the FFB server pushes back there (soft lock).
+local function loadSettings()
+    local dir = g_modSettingsDirectory
+    if dir == nil and getUserProfileAppPath ~= nil then dir = getUserProfileAppPath() .. "modSettings/" end
+    if dir == nil or loadXMLFile == nil then return end
+    local path = dir .. "FS22_WheelFFB.xml"
+    if fileExists == nil or not fileExists(path) then return end
+    local xml = loadXMLFile("WheelFFB", path)
+    if xml == nil or xml == 0 then return end
+    local rot = getXMLInt(xml, "wheelFFB#wheelRotation")
+    if rot ~= nil and rot >= 90 and rot <= 3600 then WheelFFB.wheelRotation = rot end
+    local sync = getXMLBool(xml, "wheelFFB#syncSteering")
+    if sync ~= nil then WheelFFB.syncSteering = sync end
+    delete(xml)
+end
+pcall(loadSettings)
+
+--- Degrees the in-game steering wheel turns from center to full lock, or nil if unknown.
+local function inGameLock(vehicle)
+    local drv = vehicle.spec_drivable
+    local sw = drv ~= nil and drv.steeringWheel or nil
+    if sw == nil or not finite(sw.indoorRotation) or sw.indoorRotation == 0 then return nil end
+    local rotTime = math.max(math.abs(vehicle.maxRotTime or 0), math.abs(vehicle.minRotTime or 0))
+    if not finite(rotTime) or rotTime <= 0 then return nil end
+    return math.deg(math.abs(sw.indoorRotation) * rotTime)
+end
+
+if Drivable ~= nil and Drivable.actionEventSteer ~= nil and InputDevice ~= nil and InputDevice.CATEGORY ~= nil then
+    local steer = Drivable.actionEventSteer
+    Drivable.actionEventSteer = function(self, actionName, inputValue, callbackState, isAnalog, isMouse, deviceCategory, ...)
+        if WheelFFB.syncSteering and isAnalog and deviceCategory == InputDevice.CATEGORY.WHEEL and finite(inputValue) then
+            local lock = inGameLock(self)
+            local half = WheelFFB.wheelRotation / 2
+            local v = inputValue
+            if lock ~= nil and lock > 1 and lock < half then
+                v = inputValue * half / lock
+            end
+            local over = 0
+            if v > 1 then over = v - 1; v = 1 elseif v < -1 then over = v + 1; v = -1 end
+            self.wheelFFBLockOver = over
+            self.wheelFFBDirect = v
+            self.wheelFFBSteerTime = ctx.elapsed
+            inputValue = v
+        end
+        return steer(self, actionName, inputValue, callbackState, isAnalog, isMouse, deviceCategory, ...)
+    end
+end
+
+if Drivable ~= nil and Drivable.updateVehiclePhysics ~= nil then
+    local physics = Drivable.updateVehiclePhysics
+    Drivable.updateVehiclePhysics = function(self, axisForward, axisSide, doHandbrake, dt, ...)
+        -- Steering events only arrive while the wheel is off center; a stale value means centered.
+        if WheelFFB.syncSteering and self.wheelFFBDirect ~= nil and self.wheelFFBSteerTime ~= nil then
+            if ctx.elapsed - self.wheelFFBSteerTime < 100 then
+                if self.getIsPowered == nil or self:getIsPowered() then
+                    axisSide = self.wheelFFBDirect
+                    self.spec_drivable.axisSide = axisSide
+                end
+            else
+                self.wheelFFBDirect = nil
+                self.wheelFFBLockOver = 0
+            end
+        end
+        return physics(self, axisForward, axisSide, doHandbrake, dt, ...)
+    end
+end
+
+-- LO-HI as a toggle. The wheel's LO-HI button is bound to "range up"; in the top range it now
+-- shifts down instead, so on a two-range tractor it flips LO <-> HI. (HOME stays "range down".)
+if Motorized ~= nil and Motorized.actionEventShiftGroup ~= nil and MotorGearShiftEvent ~= nil and InputAction ~= nil then
+    local shiftGroup = Motorized.actionEventShiftGroup
+    Motorized.actionEventShiftGroup = function(self, actionName, ...)
+        local spec = self.spec_motorized
+        local motor = spec ~= nil and spec.motor or nil
+        if actionName == InputAction.SHIFT_GROUP_UP and motor ~= nil and motor.gearGroups ~= nil
+            and motor.numGearGroups ~= nil and motor.numGearGroups > 1
+            and motor.activeGearGroupIndex ~= nil and motor.activeGearGroupIndex >= motor.numGearGroups then
+            pcall(MotorGearShiftEvent.sendEvent, self, MotorGearShiftEvent.TYPE_SHIFT_GROUP_DOWN)
+            return
+        end
+        return shiftGroup(self, actionName, ...)
+    end
+end
+
+-- H-shifter helper. In FS22, R only flips the driving direction and choosing a gear never flips
+-- it back, so going from R straight into 2nd kept reversing. Choosing any gear while reversing now
+-- switches to forward first, through the game's own (multiplayer-safe) direction event.
+if Motorized ~= nil and Motorized.actionEventSelectGear ~= nil and MotorGearShiftEvent ~= nil then
+    local selectGear = Motorized.actionEventSelectGear
+    Motorized.actionEventSelectGear = function(self, actionName, inputValue, ...)
+        if inputValue == 1 then
+            local spec = self.spec_motorized
+            local motor = spec ~= nil and spec.motor or nil
+            if motor ~= nil and motor.currentDirection == -1 then
+                pcall(MotorGearShiftEvent.sendEvent, self, MotorGearShiftEvent.TYPE_DIRECTION_CHANGE_POS)
+            end
+        end
+        return selectGear(self, actionName, inputValue, ...)
+    end
 end
 
 addModEventListener(WheelFFB)
