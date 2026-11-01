@@ -17,7 +17,7 @@ WheelFFB = {
     PIPE = "\\\\.\\pipe\\WheelFFB",
     SEND_INTERVAL = 16,   -- ms, ~60 Hz
     RETRY_INTERVAL = 1000, -- ms between attempts to open the pipe
-    VERSION = "1.5",
+    VERSION = "1.6",
     -- Physical wheel rotation, lock to lock, in degrees (Wheel Studio's rotation angle).
     -- Override in modSettings/FS22_WheelFFB.xml: <wheelFFB wheelRotation="900" syncSteering="true"/>
     wheelRotation = 900,
@@ -329,8 +329,37 @@ function WheelFFB.onLoHi(self, actionName, inputValue)
         sendShift(self, top and MotorGearShiftEvent.TYPE_SHIFT_GROUP_DOWN or MotorGearShiftEvent.TYPE_SHIFT_GROUP_UP)
         return
     end
-    if isSplitGearbox(motor) and motor.currentDirection ~= -1 then
-        local gears, t = motor.forwardGears, motor.targetGear or 0
+    -- In R: step through the reverse gears (R is a shifter slot, so no other position can pick them).
+    -- In reverse FS22 counts "down" as the next gear up.
+    if motor.currentDirection == -1 then
+        local back, t = motor.backwardGears, motor.targetGear or 0
+        if back ~= nil and #back > 1 and t > 0 then
+            if t < #back then
+                sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_DOWN)
+            else
+                for _ = 1, t - 1 do sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_UP) end
+            end
+        end
+        return
+    end
+    -- In the wheel's top shifter position (6th), on tractors with more gears above it: step up
+    -- through them and wrap back, so the road gears of an 8-position gearbox are reachable.
+    local gears, t = motor.forwardGears, motor.targetGear or 0
+    local top = nil
+    for i, gear in ipairs(gears or {}) do
+        if InputAction.SHIFT_GEAR_SELECT_6 ~= nil and gear.inputAction == InputAction.SHIFT_GEAR_SELECT_6 then top = i end
+    end
+    if top ~= nil and t >= top and #gears > top + 1 then
+        if t < #gears then
+            sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_UP)
+            self.wheelFFBSplitHigh = true
+        else
+            for _ = 1, t - top do sendShift(self, MotorGearShiftEvent.TYPE_SHIFT_DOWN) end
+            self.wheelFFBSplitHigh = false
+        end
+        return
+    end
+    if isSplitGearbox(motor) then
         local cur, nxt = gears[t], gears[t + 1]
         if cur ~= nil and cur.inputAction ~= nil and nxt ~= nil and nxt.inputAction == nil then
             self.wheelFFBSplitHigh = true
