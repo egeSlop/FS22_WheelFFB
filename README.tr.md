@@ -25,6 +25,10 @@ doğrulandı. Dışarıya tek yol `io`, o da Windows named pipe açabiliyor. Kü
 (relay) bu pipe'ı WebSocket'e çevirir. FFB sunucusu [ffb-server](https://github.com/egeSlop/ffb-server):
 ister [V987 Wheel Studio](https://github.com/egeSlop/v987-wheel-studio) içinde, ister tek başına.
 
+1.7 sürümünden beri mod vitesi, yakıtı, farları, sinyalleri, tepe lambasını, hız sabitleyiciyi ve
+aracın adını da gönderiyor. Wheel Studio'nun tablet paneli bunları gösterir, FS22 butonları da
+sizin FS22 tuş atamalarınızdaki tuşlara basar.
+
 ## Kurulum (Linux, Steam + Proton)
 
 1. Bir FFB sunucusu kurun. [V987 Wheel Studio](https://github.com/egeSlop/v987-wheel-studio)'nun

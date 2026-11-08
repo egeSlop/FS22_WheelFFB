@@ -17,7 +17,7 @@ WheelFFB = {
     PIPE = "\\\\.\\pipe\\WheelFFB",
     SEND_INTERVAL = 16,   -- ms, ~60 Hz
     RETRY_INTERVAL = 1000, -- ms between attempts to open the pipe
-    VERSION = "1.6",
+    VERSION = "1.7",
     -- Physical wheel rotation, lock to lock, in degrees (Wheel Studio's rotation angle).
     -- Override in modSettings/FS22_WheelFFB.xml: <wheelFFB wheelRotation="900" syncSteering="true"/>
     wheelRotation = 900,
@@ -111,6 +111,10 @@ function WheelFFB:buildLine()
         num(parts, "load", mot.smoothedLoadPercentage, "%.4f")
     end
 
+    -- Dashboard fields (gear, fuel, lights...): the FFB server ignores them, but repeats them
+    -- on /stream for V987 Wheel Studio's tablet dashboard. Each one is optional.
+    pcall(WheelFFB.dashFields, vehicle, parts)
+
     -- Chassis motion, in the vehicle's own frame.
     local node = vehicle.components ~= nil and vehicle.components[1] ~= nil and vehicle.components[1].node or nil
     if node ~= nil and node ~= 0 and (entityExists == nil or entityExists(node)) then
@@ -148,6 +152,69 @@ function WheelFFB:buildLine()
     end
     parts[#parts + 1] = '"wheels":[' .. table.concat(wheels, ",") .. "]"
     return "{" .. table.concat(parts, ",") .. "}"
+end
+
+local function jsonStr(v)
+    return '"' .. tostring(v):gsub('[%c"\\]', function(c)
+        if c == '"' then return '\\"' elseif c == "\\" then return "\\\\" else return " " end
+    end) .. '"'
+end
+
+local function bool(parts, key, v)
+    if v ~= nil then parts[#parts + 1] = '"' .. key .. '":' .. tostring(v == true) end
+end
+
+function WheelFFB.dashFields(vehicle, parts)
+    if ctx.nameOf ~= vehicle then
+        ctx.nameOf = vehicle
+        local ok, n = pcall(vehicle.getFullName, vehicle)
+        ctx.name = ok and type(n) == "string" and n or nil
+    end
+    if ctx.name ~= nil then parts[#parts + 1] = '"vehicle":' .. jsonStr(ctx.name) end
+
+    if vehicle.getGearInfoToDisplay ~= nil then
+        local gear, group = vehicle:getGearInfoToDisplay()
+        if gear ~= nil then parts[#parts + 1] = '"gear":' .. jsonStr(gear) end
+        if group ~= nil then parts[#parts + 1] = '"gearGroup":' .. jsonStr(group) end
+    end
+
+    -- Fuel (diesel, electric charge or methane, whichever the engine burns).
+    if vehicle.getConsumerFillUnitIndex ~= nil and vehicle.getFillUnitFillLevelPercentage ~= nil and FillType ~= nil then
+        for _, ft in ipairs({ FillType.DIESEL, FillType.ELECTRICCHARGE, FillType.METHANE }) do
+            local idx = ft ~= nil and vehicle:getConsumerFillUnitIndex(ft) or nil
+            if idx ~= nil then
+                num(parts, "fuel", vehicle:getFillUnitFillLevelPercentage(idx), "%.4f")
+                break
+            end
+        end
+    end
+
+    local lights = vehicle.spec_lights
+    if lights ~= nil then
+        local mask = lights.lightsTypesMask or 0
+        local function has(bit) return math.floor(mask / 2 ^ bit) % 2 == 1 end
+        bool(parts, "lightsLow", has(0))
+        bool(parts, "lightsWorkBack", has(1))
+        bool(parts, "lightsWorkFront", has(2))
+        bool(parts, "lightsHigh", has(3))
+        bool(parts, "beacon", lights.beaconLightsActive == true)
+        local turn = lights.turnLightState or 0
+        local L = Lights ~= nil and Lights.TURNLIGHT_LEFT or 1
+        local R = Lights ~= nil and Lights.TURNLIGHT_RIGHT or 2
+        local H = Lights ~= nil and Lights.TURNLIGHT_HAZARD or 3
+        bool(parts, "blinkerLeft", turn == L)
+        bool(parts, "blinkerRight", turn == R)
+        bool(parts, "hazard", turn == H)
+    end
+
+    if vehicle.getCruiseControlState ~= nil then
+        local off = Drivable ~= nil and Drivable.CRUISECONTROL_STATE_OFF or 0
+        local on = vehicle:getCruiseControlState() ~= off
+        bool(parts, "cruiseOn", on)
+        num(parts, "cruise", on and vehicle:getCruiseControlSpeed() or 0, "%.1f")
+    end
+
+    if vehicle.getIsAIActive ~= nil then bool(parts, "ai", vehicle:getIsAIActive()) end
 end
 
 function WheelFFB:close()

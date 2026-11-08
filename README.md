@@ -25,6 +25,10 @@ only way out is `io`, which can open a Windows named pipe, and a small relay tur
 WebSocket. The FFB server is [ffb-server](https://github.com/egeSlop/ffb-server), either inside
 [V987 Wheel Studio](https://github.com/egeSlop/v987-wheel-studio) or on its own.
 
+Since 1.7 the mod also sends the gear, fuel, lights, indicators, beacon, cruise control and the
+vehicle name. Wheel Studio's tablet dashboard shows them, and its FS22 buttons press the keys from
+your own FS22 bindings.
+
 ## Install (Linux, Steam + Proton)
 
 1. Install an FFB server. [V987 Wheel Studio](https://github.com/egeSlop/v987-wheel-studio) has
